@@ -314,10 +314,23 @@ class SUPIRModel(DiffusionEngine):
                     return d
                 return {k: (v.cpu() if torch.is_tensor(v) else v) for k, v in d.items()}
 
-            with torch.no_grad():
-                c, uc = self.conditioner.get_unconditional_conditioning(
-                    _sur_cpu(batch), _sur_cpu(batch_uc)
-                )
+            # Les embedders portent un attribut `device` fige a la construction
+            # (souvent "cuda") et y envoient leurs jetons tokenises : sans cela,
+            # F.embedding recoit un index sur cuda:0 et des poids sur cpu.
+            _dev_emb = []
+            for _e in getattr(self.conditioner, "embedders", []):
+                _dev_emb.append(getattr(_e, "device", None))
+                if hasattr(_e, "device"):
+                    _e.device = _cond_dev
+            try:
+                with torch.no_grad():
+                    c, uc = self.conditioner.get_unconditional_conditioning(
+                        _sur_cpu(batch), _sur_cpu(batch_uc)
+                    )
+            finally:
+                for _e, _d in zip(getattr(self.conditioner, "embedders", []), _dev_emb):
+                    if _d is not None:
+                        _e.device = _d
 
             _dt = getattr(self.model, "dtype", None)
 
