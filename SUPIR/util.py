@@ -24,6 +24,50 @@ def load_state_dict(ckpt_path, location='cpu'):
     return state_dict
 
 
+def load_state_dict_into(model, ckpt_path, location='cpu'):
+    """Verse un checkpoint dans le modele TENSEUR PAR TENSEUR.
+
+    `load_state_dict()` ci-dessus materialise tout le fichier d'un coup : pour
+    juggernautXL (6,7 Go) cela fait coexister le checkpoint entier et le modele
+    deja instancie, ce qui suffit a declencher l'OOM killer sur une machine a
+    RAM contrainte. Ici un seul tenseur est en memoire a la fois, et les valeurs
+    sont copiees en place dans les parametres existants.
+
+    Equivalent fonctionnel de `model.load_state_dict(load_state_dict(p), strict=False)`,
+    mais en comptant ce qui a ete applique au lieu de l'ignorer en silence.
+    """
+    _, extension = os.path.splitext(ckpt_path)
+    if extension.lower() != ".safetensors":
+        model.load_state_dict(load_state_dict(ckpt_path, location), strict=False)
+        return
+
+    from safetensors import safe_open
+
+    cibles = dict(model.named_parameters())
+    cibles.update(dict(model.named_buffers()))
+    charges = ignores = formes = 0
+    with torch.no_grad():
+        with safe_open(ckpt_path, framework="pt", device=location) as fh:
+            for cle in fh.keys():
+                cible = cibles.get(cle)
+                if cible is None:
+                    ignores += 1
+                    continue
+                t = fh.get_tensor(cle)
+                if t.shape != cible.shape:
+                    formes += 1
+                    del t
+                    continue
+                cible.copy_(t)
+                del t
+                charges += 1
+    print(
+        f'Loaded state_dict from {ckpt_path} '
+        f'({charges} appliques, {ignores} absents du modele, {formes} formes incompatibles)',
+        color.BRIGHT_BLUE,
+    )
+
+
 def create_model(config_path):
     config = OmegaConf.load(config_path)
     model = instantiate_from_config(config.model).cpu()
@@ -59,7 +103,7 @@ def create_SUPIR_model(config_path, SUPIR_sign=None):
     # first the SDXL model
     if hasattr(config, "SDXL_CKPT") and config.SDXL_CKPT is not None:
         print(f"Loading SDXL checkpoint: {config.SDXL_CKPT}", color.BRIGHT_BLUE)
-        model.load_state_dict(load_state_dict(config.SDXL_CKPT), strict=False)
+        load_state_dict_into(model, config.SDXL_CKPT)
 
     # load supir model according to Q of F sign
     if SUPIR_sign is not None:
@@ -68,7 +112,7 @@ def create_SUPIR_model(config_path, SUPIR_sign=None):
         if hasattr(config, ckpt_key) and getattr(config, ckpt_key) is not None:
             ckpt_path = getattr(config, ckpt_key)
             print(f"Loading SUPIR {SUPIR_sign} checkpoint: {ckpt_path}", color.BRIGHT_BLUE)
-            model.load_state_dict(load_state_dict(ckpt_path), strict=False)
+            load_state_dict_into(model, ckpt_path)
         else:
             print(f"Warning: SUPIR sign '{SUPIR_sign}' provided, but checkpoint path '{ckpt_key}' not found or is None in config.", color.RED)
 
