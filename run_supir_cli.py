@@ -62,7 +62,13 @@ def setup_model(args, device):
         config = "options/SUPIR_v0.yaml"
 
     # create SUPIR model
-    model = create_SUPIR_model(config, SUPIR_sign=args.SUPIR_sign)
+    # bati directement en fp16 quand la demi-precision est demandee : evite le
+    # pic fp32 que le `model.half()` plus bas ne peut plus empecher
+    model = create_SUPIR_model(
+        config,
+        SUPIR_sign=args.SUPIR_sign,
+        build_dtype=torch.float16 if args.loading_half_params else None,
+    )
 
     # precision settings
     if args.loading_half_params:

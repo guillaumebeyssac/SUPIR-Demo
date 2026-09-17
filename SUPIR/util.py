@@ -75,7 +75,7 @@ def create_model(config_path):
     return model
 
 
-def create_SUPIR_model(config_path, SUPIR_sign=None):
+def create_SUPIR_model(config_path, SUPIR_sign=None, build_dtype=None):
 
     # Creates a SUPIR model instance by blending SDXL and SUPIR capabilities
     # 
@@ -95,7 +95,21 @@ def create_SUPIR_model(config_path, SUPIR_sign=None):
     config = OmegaConf.load(config_path)
 
     # instantiate model using the config loaded froom the yaml
-    model = instantiate_from_config(config.model).cpu()
+    #
+    # `build_dtype` (ex. torch.float16) fait NAITRE les parametres dans cette
+    # precision au lieu de les creer en fp32 puis de les convertir. La nuance est
+    # decisive sur une machine a RAM contrainte : `model.half()` applique apres
+    # coup fait coexister les deux copies (fp32 + fp16), soit un pic SUPERIEUR a
+    # la construction fp32 seule. Ici le fp32 n'existe jamais.
+    if build_dtype is not None:
+        _dtype_initial = torch.get_default_dtype()
+        torch.set_default_dtype(build_dtype)
+        try:
+            model = instantiate_from_config(config.model).cpu()
+        finally:
+            torch.set_default_dtype(_dtype_initial)
+    else:
+        model = instantiate_from_config(config.model).cpu()
 
     print(f"Instantiated model using config from {config_path}", color.BRIGHT_BLUE)
 
