@@ -153,7 +153,19 @@ def get_device():
 # ====================================================================
 # LOAD SMOVLM MODEL
 def load_smolvlm_model(model_path):
-    device = get_device()
+    # Le captioneur reste en RAM par defaut. Il pese ~500 M de parametres et n'est
+    # sollicite qu'une fois par image, mais `_vlm_cache` le garde resident : sur une
+    # carte de 10 Go il immobilise ~1 Go a cote du modele SUPIR, ce qui suffit a
+    # faire echouer l'attention du VAE tuile (mesure : 205 Mio libres pour 210
+    # demandes). En fp32 sur CPU la legende prend quelques secondes de plus.
+    # SUPIR_VLM_DEVICE=cuda retablit l'ancien comportement.
+    _force = os.environ.get("SUPIR_VLM_DEVICE", "cpu").lower()
+    if _force == "cuda":
+        device = get_device()
+        _dtype = torch.float16
+    else:
+        device = torch.device("cpu")
+        _dtype = torch.float32
     print(f"Using {device} device")
     
     processor = AutoProcessor.from_pretrained(model_path)
@@ -173,14 +185,14 @@ def load_smolvlm_model(model_path):
             if impl is not None:
                 model = AutoModelForImageTextToText.from_pretrained(
                     model_path,
-                    torch_dtype=torch.float16,
+                    torch_dtype=_dtype,
                     _attn_implementation=impl
                 ).to(device)
                 print(f"✓ Loaded with {impl} attention", color.GREEN)
             else:
                 model = AutoModelForImageTextToText.from_pretrained(
                     model_path,
-                    torch_dtype=torch.float16
+                    torch_dtype=_dtype
                 ).to(device)
                 print("✓ Loaded with no attention specified", color.GREEN)
 
