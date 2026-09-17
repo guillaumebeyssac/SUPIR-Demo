@@ -87,6 +87,8 @@ def setup_model(args, device):
     model.conditioner = None
     model = model.to(device)
     model.conditioner = _conditionneur
+    # il tournera sur CPU : la demi-precision y a des operations manquantes
+    model.conditioner.float()
 
     # if using TiledRestoreEDMSampler
     if args.sampler_mode == "TiledRestoreEDMSampler":

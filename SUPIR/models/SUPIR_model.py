@@ -303,17 +303,42 @@ class SUPIRModel(DiffusionEngine):
         # temps de l'appel, puis on le redescend et on rend la memoire au cache.
         _cond_dev = next(self.conditioner.parameters()).device
         _cible = next(self.model.parameters()).device
-        _deplace = _cond_dev != _cible
-        if _deplace:
-            self.conditioner.to(_cible)
-        try:
+
+        if _cond_dev.type == "cpu" and _cible.type != "cpu":
+            # Conditionneur EXECUTE sur CPU, jamais monte sur la carte. A ce stade
+            # celle-ci porte deja le modele ET les activations de l'encodage VAE :
+            # y transferer les ~1,6 Go des tours texte est precisement ce qui
+            # echouait. Seules les sorties, minuscules, rejoignent le GPU.
+            def _sur_cpu(d):
+                if not isinstance(d, dict):
+                    return d
+                return {k: (v.cpu() if torch.is_tensor(v) else v) for k, v in d.items()}
+
+            with torch.no_grad():
+                c, uc = self.conditioner.get_unconditional_conditioning(
+                    _sur_cpu(batch), _sur_cpu(batch_uc)
+                )
+
+            _dt = getattr(self.model, "dtype", None)
+
+            def _vers_carte(d):
+                if not isinstance(d, dict):
+                    return d
+                out = {}
+                for k, v in d.items():
+                    if torch.is_tensor(v):
+                        if v.is_floating_point() and _dt is not None:
+                            out[k] = v.to(device=_cible, dtype=_dt)
+                        else:
+                            out[k] = v.to(_cible)
+                    else:
+                        out[k] = v
+                return out
+
+            c, uc = _vers_carte(c), _vers_carte(uc)
+        else:
             with torch.amp.autocast('cuda', dtype=self.ae_dtype):
                 c, uc = self.conditioner.get_unconditional_conditioning(batch, batch_uc)
-        finally:
-            if _deplace:
-                self.conditioner.to(_cond_dev)
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
         # if not isinstance(prompt[0], list):
         #     batch['txt'] = [''.join([_p, p_p]) for _p in prompt]
