@@ -271,7 +271,14 @@ def load_supir_model(sampler_type,
 
     print(f"Loading SUPIR model from config: {sampler_config_path}")
 
-    model = create_SUPIR_model(sampler_config_path, SUPIR_sign=supir_model_type)
+    # bati directement en fp16 quand la demi-precision est demandee : le
+    # `model.half()` ci-dessous n'intervient qu'apres la construction fp32 (~16 Go)
+    # et arrive donc trop tard pour empecher le pic — cf. run_supir_cli.py
+    model = create_SUPIR_model(
+        sampler_config_path,
+        SUPIR_sign=supir_model_type,
+        build_dtype=torch.float16 if loading_half_params else None,
+    )
     if loading_half_params:
         model = model.half()
     if use_tile_vae:
@@ -281,7 +288,15 @@ def load_supir_model(sampler_type,
     model.ae_dtype = convert_dtype(ae_dtype)
     # Set the precision for the diffusion component (unet)
     model.model.dtype = convert_dtype(diff_dtype)
+    # Le conditionneur reste en RAM et s'execute sur CPU : ses ~1,6 Go sur une carte
+    # de 10 Go font la difference entre "tient" et "OutOfMemory". SUPIR_model gere
+    # le cas dans prepare_condition.
+    _conditionneur = model.conditioner
+    model.conditioner = None
     model = model.to(device)
+    model.conditioner = _conditionneur
+    # il tournera sur CPU : la demi-precision y a des operations manquantes
+    model.conditioner.float()
 
     # if using TiledRestoreEDMSampler - set sampler tile size and stride   
     if sampler_type == "TiledRestoreEDMSampler":
