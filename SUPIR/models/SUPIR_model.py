@@ -297,8 +297,23 @@ class SUPIRModel(DiffusionEngine):
         # !>>> Create the positive prompt by concatenating prompt and p_p
         batch['txt'] = [''.join([prompt, p_p])]
 
-        with torch.amp.autocast('cuda', dtype=self.ae_dtype):
-            c, uc = self.conditioner.get_unconditional_conditioning(batch, batch_uc)
+        # Le conditionneur (CLIP1 + CLIP2, ~1,6 Go en fp16) ne sert QU'ICI, une seule
+        # fois par image. Le laisser sur la carte immobilise cette VRAM pendant tout
+        # l'echantillonnage, qui en a besoin pour ses activations. On l'y monte le
+        # temps de l'appel, puis on le redescend et on rend la memoire au cache.
+        _cond_dev = next(self.conditioner.parameters()).device
+        _cible = next(self.model.parameters()).device
+        _deplace = _cond_dev != _cible
+        if _deplace:
+            self.conditioner.to(_cible)
+        try:
+            with torch.amp.autocast('cuda', dtype=self.ae_dtype):
+                c, uc = self.conditioner.get_unconditional_conditioning(batch, batch_uc)
+        finally:
+            if _deplace:
+                self.conditioner.to(_cond_dev)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # if not isinstance(prompt[0], list):
         #     batch['txt'] = [''.join([_p, p_p]) for _p in prompt]

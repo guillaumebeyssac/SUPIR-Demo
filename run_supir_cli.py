@@ -80,7 +80,13 @@ def setup_model(args, device):
     model.model.dtype = convert_dtype(args.diff_dtype)
 
     # move the model to device (cuda or cpu)
+    # Le conditionneur reste en RAM : il n'est utilise qu'une fois par image et
+    # SUPIR_model le monte sur la carte a la volee. Sur une carte de 10 Go, ses
+    # ~1,6 Go font la difference entre "tient" et "OutOfMemory".
+    _conditionneur = model.conditioner
+    model.conditioner = None
     model = model.to(device)
+    model.conditioner = _conditionneur
 
     # if using TiledRestoreEDMSampler
     if args.sampler_mode == "TiledRestoreEDMSampler":
