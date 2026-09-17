@@ -574,10 +574,15 @@ class FrozenOpenCLIPEmbedder2(AbstractEmbModel):
         assert layer in self.LAYERS
         # Use provided path if available, otherwise use version
         pretrained_path = clip2_path
+        # fp16 : instancie le bigG en demi-precision au lieu du fp32 par defaut
+        # d'open_clip. Sur une machine a RAM contrainte, la construction fp32 de
+        # ce modele (~10 Go anonymes) suffit a declencher l'OOM avant meme que
+        # la tour vision ne soit supprimee ci-dessous.
         model, _, _ = open_clip.create_model_and_transforms(
             arch,
             device=torch.device("cpu"),
             pretrained=pretrained_path,
+            precision="fp16",
         )
         del model.visual
         self.model = model
