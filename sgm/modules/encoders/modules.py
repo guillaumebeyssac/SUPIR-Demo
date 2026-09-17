@@ -574,17 +574,55 @@ class FrozenOpenCLIPEmbedder2(AbstractEmbModel):
         assert layer in self.LAYERS
         # Use provided path if available, otherwise use version
         pretrained_path = clip2_path
-        # fp16 : instancie le bigG en demi-precision au lieu du fp32 par defaut
-        # d'open_clip. Sur une machine a RAM contrainte, la construction fp32 de
-        # ce modele (~10 Go anonymes) suffit a declencher l'OOM avant meme que
-        # la tour vision ne soit supprimee ci-dessous.
-        model, _, _ = open_clip.create_model_and_transforms(
-            arch,
-            device=torch.device("cpu"),
-            pretrained=pretrained_path,
-            precision="fp16",
-        )
-        del model.visual
+        if str(pretrained_path).endswith(".safetensors"):
+            # --- Chargement econome en RAM -------------------------------------
+            # Par defaut open_clip bati les DEUX tours en fp32 (~10 Go anonymes)
+            # avant que la tour vision ne soit supprimee juste en dessous : sur une
+            # machine a RAM contrainte cela suffit a declencher l'OOM killer.
+            # Ici la structure est batie sur le device `meta` (aucune allocation),
+            # la tour vision est retiree, puis SEULS les poids de la tour texte
+            # (~1,4 Go en fp16) sont verses depuis le fichier.
+            from safetensors import safe_open
+
+            with torch.device("meta"):
+                model = open_clip.create_model(arch, pretrained=None, device="meta")
+            del model.visual
+
+            etat = {}
+            with safe_open(pretrained_path, framework="pt", device="cpu") as fh:
+                for k in fh.keys():
+                    if k.startswith("visual."):
+                        continue
+                    t = fh.get_tensor(k)
+                    etat[k] = t.half() if t.is_floating_point() else t
+            model.load_state_dict(etat, strict=False, assign=True)
+            del etat
+
+            # `attn_mask` est un tampon NON PERSISTANT : absent du fichier de poids,
+            # il resterait sur `meta` et produirait des resultats faux sans erreur.
+            n_pos = model.positional_embedding.shape[0]
+            masque = torch.empty(n_pos, n_pos)
+            masque.fill_(float("-inf"))
+            masque.triu_(1)
+            model.attn_mask = masque
+
+            restants = [
+                n
+                for n, t in list(model.named_parameters()) + list(model.named_buffers())
+                if t.is_meta
+            ]
+            if restants:
+                raise RuntimeError(
+                    "CLIP2 : tenseurs restes sur meta, chargement incomplet : %r"
+                    % (restants[:5],)
+                )
+        else:
+            model, _, _ = open_clip.create_model_and_transforms(
+                arch,
+                device=torch.device("cpu"),
+                pretrained=pretrained_path,
+            )
+            del model.visual
         self.model = model
 
         self.device = device
